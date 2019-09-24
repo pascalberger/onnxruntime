@@ -37,7 +37,6 @@ void RunUniqueTest(const std::vector<int64_t>& X_dims,
   test.AddOutput<int64_t>("counts", counts_dims, counts);
 
   test.Run();
-  // test.Run(OpTester::ExpectResult::kExpectSuccess, "", {kTensorrtExecutionProvider});
 }
 
 TEST(Unique, Flatten_Unsorted) {
@@ -311,6 +310,47 @@ TEST(Unique, Axis2_Sorted) {
 
   RunUniqueTest<int32_t>(X_dims, X, &axis, sorted, Y_dims, Y, indices_dims, indices,
                          inverse_indices_dims, inverse_indices, counts_dims, counts);
+}
+
+TEST(Unique, InvalidAxis) {
+  const int64_t axis = 12;
+  const std::vector<int64_t> X_dims{2, 3};
+  const std::vector<float> X{1.f, 4.f, 1.f, 2.f, 2.f, 0.f};
+  const std::vector<int64_t> Y_dims{};
+  const std::vector<float> Y{0.f};
+
+  OpTester test("Unique", 11);
+
+  test.AddAttribute("axis", axis);
+
+  test.AddInput("X", X_dims, X);
+  test.AddOutput("Y", Y_dims, Y);
+
+  test.Run(OpTester::ExpectResult::kExpectFailure, "[ShapeInferenceError] Invalid value for attribute axis");
+}
+
+// check empty input is gracefully handled
+TEST(Unique, EmptyInput) {
+  const std::vector<int64_t> X_dims{0};
+  const std::vector<float> X{};
+  const std::vector<int64_t> Y_dims{0};
+  const std::vector<float> Y{};
+  const std::vector<int64_t> indices_dims{0};
+  const std::vector<int64_t> indices{};
+  const std::vector<int64_t> inverse_indices_dims{0};
+  const std::vector<int64_t> inverse_indices{};
+  const std::vector<int64_t> counts_dims{0};
+  const std::vector<int64_t> counts{};
+
+  OpTester test("Unique", 11);
+
+  test.AddInput("X", X_dims, X);
+  test.AddOutput("Y", Y_dims, Y);
+  test.AddOutput<int64_t>("indices", indices_dims, indices);
+  test.AddOutput<int64_t>("inverse_indices", inverse_indices_dims, inverse_indices);
+  test.AddOutput<int64_t>("counts", counts_dims, counts);
+
+  test.Run();
 }
 
 }  // namespace test

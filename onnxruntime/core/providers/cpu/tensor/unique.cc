@@ -125,30 +125,13 @@ class Subtensor {
   }
 
   bool operator<(const Subtensor& rhs) const {
-    // we only expect to be comparing entries with the same shape
-    assert(items_.size() == rhs.items_.size());
-
     return items_ < rhs.items_;
-    //bool less_than = false;
-    //for (size_t i = 0, end = items_.size(); i < end; ++i) {
-    //  if (items_[i] == rhs.items_[i])
-    //    continue;
-    //  else {
-    //    // return items_[i] < rhs.items_[i];
-    //    less_than = items_[i] < rhs.items_[i];
-    //    break;
-    //  }
-    //}
-
-    //ORT_ENFORCE(less_than == c, "temporary test");
-
-    //return less_than;  // equal if we get here
   }
 
   const std::vector<T>& GetItems() const { return items_; }
 
  private:
-  // TODO: Copy for now. std::string would be better as std::reference_wrapper<std::string>
+  // TODO: Simple copy for now. std::string would be better as std::reference_wrapper<std::string>
   std::vector<T> items_;
 };
 
@@ -159,7 +142,7 @@ static void CreateFlattenedOutput(OpKernelContext& context,
                                   const std::vector<int64_t>& inverse_index,         // unsorted
                                   bool sorted) {
   int64_t num_unique = static_cast<int64_t>(indices.size());
-  Tensor& Y = *context.Output(0, TensorShape({num_unique /*, <Subtensor shape> if not flattened */}));
+  Tensor& Y = *context.Output(0, TensorShape({num_unique}));
   Tensor* indices_out = context.Output(1, TensorShape({num_unique}));
   Tensor* inverse_indices = context.Output(2, TensorShape({static_cast<int64_t>(inverse_index.size())}));
   Tensor* counts = context.Output(3, TensorShape({num_unique}));
@@ -175,8 +158,8 @@ static void CreateFlattenedOutput(OpKernelContext& context,
   // iterate using 'offsets' which is sorted, but contains the offset of the unsorted entry
   auto offsets_iter = offsets.begin();
   for (int64_t i = 0, end = num_unique; i < end; ++i, ++offsets_iter) {
+    // write sequentially if we want sorted output, use the unsorted_idx if not
     auto unsorted_idx = offsets_iter->second;
-    // write sequentially if we want sorted output
     auto output_idx = sorted ? i : unsorted_idx;
 
     Y_data[output_idx] = offsets_iter->first;
@@ -204,7 +187,6 @@ static void CreateFlattenedOutput(OpKernelContext& context,
         inverse_indices_data[i] = unsorted_to_sorted[inverse_index[i]];
       }
     } else {
-      // memcpy or gsl::copy
       for (size_t i = 0, end = inverse_index.size(); i < end; ++i) {
         inverse_indices_data[i] = inverse_index[i];
       }
@@ -221,6 +203,8 @@ static void CreateOutput(OpKernelContext& context,
                          const std::vector<int64_t>& inverse_index,             // unsorted
                          bool sorted) {
   int64_t num_unique = static_cast<int64_t>(indices.size());
+
+  // rows and columns for the slice along axis, flattened to 2D by merging the dimensions before and after the axis
   int64_t num_cols = subtensor_shape.SizeFromDimension(axis);
   int64_t num_rows = subtensor_shape.SizeToDimension(axis);
 
@@ -249,11 +233,10 @@ static void CreateOutput(OpKernelContext& context,
 
   // iterate using 'offsets' which is sorted, but contains the offset of the unsorted entry
   auto offsets_iter = offsets.begin();
-  //size_t items_per_entry = subtensor_shape.Size();
 
   for (int64_t i = 0, end = num_unique; i < end; ++i, ++offsets_iter) {
+    // write sequentially if we want sorted output, use the unsorted_idx if not
     auto unsorted_idx = offsets_iter->second;
-    // write sequentially if we want sorted output
     auto output_idx = (sorted ? i : unsorted_idx);
 
     const auto& items = offsets_iter->first.GetItems();
@@ -299,7 +282,6 @@ static void CreateOutput(OpKernelContext& context,
         inverse_indices_data[i] = unsorted_to_sorted[inverse_index[i]];
       }
     } else {
-      // memcpy or gsl::copy
       for (size_t i = 0, end = inverse_index.size(); i < end; ++i) {
         inverse_indices_data[i] = inverse_index[i];
       }
@@ -307,26 +289,13 @@ static void CreateOutput(OpKernelContext& context,
   }
 }
 
-//// struct to allow us to use T as a key in a map without copying
-//template <typename T>
-//struct TRef {
-//  TRef(const T& value) : ref{value} {}
-//  operator<(const TRef& rhs) {
-//    return ref.get() < rhs.ref.get();
-//  }
-//
-//  std::reference_wrapper<T> ref;
-//};
-
 template <typename T>
 Status Unique::ComputeImpl(OpKernelContext& context) const {
   const Tensor& input = *context.Input<Tensor>(0);
   auto data = input.DataAsSpan<T>();
 
   if (flatten_) {
-    // offset of entry in indices
-    // TODO: Could handle T=std::string better and avoid copying to use in the key of offsets but that req
-    std::map<const T, int64_t> offsets;
+    std::map<const T, int64_t> offsets;  // offset of entry in indices. provides map between sorted and unsorted values
     std::vector<std::vector<int64_t>> indices;
     std::vector<int64_t> inverse_index;
 
@@ -337,9 +306,7 @@ Status Unique::ComputeImpl(OpKernelContext& context) const {
 
     for (int64_t i = 0, end = input.Shape().Size(); i < end; ++i) {
       auto entry = offsets.find(data[i]);
-
       if (entry == offsets.end()) {
-        // new value
         offsets[data[i]] = num_unique;
         inverse_index.push_back({num_unique});
         indices.push_back({i});
@@ -361,10 +328,7 @@ Status Unique::ComputeImpl(OpKernelContext& context) const {
     std::vector<int64_t> subtensor_dims;
     subtensor_dims.reserve(input_dims);
     for (int64_t i = 0; i < input_dims; ++i) {
-      if (i == axis)
-        subtensor_dims.push_back(1);
-      else
-        subtensor_dims.push_back(input_shape[i]);
+      subtensor_dims.push_back(i == axis ? 1 : input_shape[i]);
     }
 
     TensorShape subtensor_shape(std::move(subtensor_dims));
@@ -384,7 +348,6 @@ Status Unique::ComputeImpl(OpKernelContext& context) const {
 
       auto entry = offsets.find(s);
       if (entry == offsets.end()) {
-        // new value
         offsets[std::move(s)] = num_unique;
         inverse_index.push_back({num_unique});
         indices.push_back({i});
