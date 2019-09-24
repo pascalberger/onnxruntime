@@ -98,58 +98,25 @@ Status Unique::Compute(OpKernelContext* context) const {
   return status;
 }
 
-//template <typename T>
-//static bool LessThan(const std::vector<T>& lhs, const std::vector<T>& rhs) {
-//  for (size_t i = 0, end = lhs.size(); i < end; ++i) {
-//    if (lhs[i] < rhs[i]) {
-//      return true;
-//    } else if (lhs[i] > rhs[i]) {
-//      return false;
-//    }
-//  }
-//
-//  return false;  // equal
-//}
-//
-//template <>
-//static bool LessThan(const std::vector<std::string>& lhs, const std::vector<std::string>& rhs) {
-//  for (size_t i = 0, end = lhs.size(); i < end; ++i) {
-//    if (lhs[i] < rhs[i]) {
-//      return true;
-//    } else if (lhs[i] > rhs[i]) {
-//      return false;
-//    }
-//  }
-//
-//  return false;  // equal
-//}
-
-// TODO: There are various optimizations that could be done:
-// For std::string use std::reference_wrapper instead of copying
-// If the number of items per entry is large:
-//    it may be better to find the items each time instead of copying them into items_.
-//    could also store a hash to avoid re-finding the items unless there's a good chance of matching
+// class to represent a subtensor along a given axis for a single entry on that axis
 template <typename T>
 class Subtensor {
  public:
-  Subtensor(const gsl::span<const T>& data, const TensorShape& shape, int64_t axis, int64_t n_axis, int64_t idx) : idx_{idx} {
-    // iterate the 'idx' entry of axis.
-    // int64_t n_axis = shape[axis];
-    assert(shape[axis] == 1);
-    assert(idx < n_axis);
-
-    int64_t columns = shape.SizeFromDimension(axis);
-    //int64_t total_rows = shape.Size() / columns;
-    //int64_t tr2 = shape.SizeToDimension(axis);
-    //int64_t rows = total_rows / n_axis;  // rows for this entry
-    // assert(tr2 == total_rows);
-    int64_t rows = shape.SizeToDimension(axis);
+  // Create Subtensor for entry 'idx' on axis 'axis'
+  // n_axis is the number of entries for 'axis' is the original data.
+  //   e.g. if original shape was [4, 2] and axis is 1, n_axis == 2.
+  // subtensor_shape is the shape for the subtensor. the dimension value for the 'axis' dimension in it will be 1.
+  Subtensor(const gsl::span<const T>& data, const TensorShape& subtensor_shape,
+            int64_t axis, int64_t n_axis, int64_t idx) {
+    // rows and columns for the slice along axis, flattened to 2D by merging the dimensions before and after the axis
+    int64_t columns = subtensor_shape.SizeFromDimension(axis);
+    int64_t rows = subtensor_shape.SizeToDimension(axis);
     items_.reserve(rows * columns);
-    size_t cur_data = idx * columns;  // cur offset into data
+    size_t cur_data = idx * columns;  // offset into data for first row of slice
 
     for (int r = 0; r < rows; ++r) {
       for (int c = 0; c < columns; ++c) {
-        // TODO: could copy block instead of individual items
+        // TODO: could copy blocks instead of individual items for non std::string types
         items_.push_back(data[cur_data + c]);
       }
 
@@ -161,28 +128,26 @@ class Subtensor {
     // we only expect to be comparing entries with the same shape
     assert(items_.size() == rhs.items_.size());
 
-    bool c = items_ < rhs.items_;
-    bool less_than = false;
-    for (size_t i = 0, end = items_.size(); i < end; ++i) {
-      if (items_[i] == rhs.items_[i])
-        continue;
-      else {
-        // return items_[i] < rhs.items_[i];
-        less_than = items_[i] < rhs.items_[i];
-        break;
-      }
-    }
+    return items_ < rhs.items_;
+    //bool less_than = false;
+    //for (size_t i = 0, end = items_.size(); i < end; ++i) {
+    //  if (items_[i] == rhs.items_[i])
+    //    continue;
+    //  else {
+    //    // return items_[i] < rhs.items_[i];
+    //    less_than = items_[i] < rhs.items_[i];
+    //    break;
+    //  }
+    //}
 
-    ORT_ENFORCE(less_than == c, "temporary test");
+    //ORT_ENFORCE(less_than == c, "temporary test");
 
-    return less_than;  // equal if we get here
+    //return less_than;  // equal if we get here
   }
 
   const std::vector<T>& GetItems() const { return items_; }
 
  private:
-  int64_t idx_;
-
   // TODO: Copy for now. std::string would be better as std::reference_wrapper<std::string>
   std::vector<T> items_;
 };
