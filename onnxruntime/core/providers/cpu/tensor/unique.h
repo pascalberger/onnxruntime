@@ -21,7 +21,7 @@ class Unique final : public OpKernel {
 
  private:
   template <typename T>
-  Status ComputeImpl(OpKernelContext& context, int64_t axis) const;
+  Status ComputeImpl(OpKernelContext& context) const;
 
   bool sort_;
   bool flatten_;

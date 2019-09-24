@@ -79,9 +79,8 @@ Status Unique::Compute(OpKernelContext* context) const {
 
   Status status;
   auto data_type = input.DataType();
-  int64_t axis = HandleNegativeAxis(axis_, input.Shape().NumDimensions());
 
-  DispatchOnTensorTypeWithReturn(data_type, status, ComputeImpl, *context, axis);
+  DispatchOnTensorTypeWithReturn(data_type, status, ComputeImpl, *context);
 
   return status;
 }
@@ -168,7 +167,7 @@ class Entry {
 
 template <typename T>
 static void CreateFlattenedOutput(OpKernelContext& context,
-                                  const std::map<const T, size_t>& offsets,          // sorted:unsorted idx
+                                  const std::map<const T, int64_t>& offsets,         // sorted:unsorted idx
                                   const std::vector<std::vector<int64_t>>& indices,  // unsorted
                                   const std::vector<int64_t>& inverse_index,         // unsorted
                                   bool sorted) {
@@ -206,11 +205,12 @@ static void CreateFlattenedOutput(OpKernelContext& context,
 
   if (inverse_indices) {
     if (sorted) {
+      // need to convert unsorted entries in the inverse index to their sorted values
       std::vector<int64_t> unsorted_to_sorted;
-      unsorted_to_sorted.reserve(num_unique);
+      unsorted_to_sorted.resize(num_unique);
+      int64_t sorted_idx = 0;
       for (const auto& offset : offsets) {
-        // entry 0 is the offset of the first sorted entry
-        unsorted_to_sorted.push_back(offset.second);
+        unsorted_to_sorted[offset.second] = sorted_idx++;
       }
 
       for (size_t i = 0, end = inverse_index.size(); i < end; ++i) {
@@ -226,24 +226,31 @@ static void CreateFlattenedOutput(OpKernelContext& context,
 }
 
 template <typename T>
-Status Unique::ComputeImpl(OpKernelContext& context, int64_t axis) const {
+Status Unique::ComputeImpl(OpKernelContext& context) const {
   const Tensor& input = *context.Input<Tensor>(0);
 
   if (flatten_) {
     auto data = input.DataAsSpan<T>();
 
     // offset of entry in indices
-    std::map<const T, size_t> offsets;
+    std::map<const T, int64_t> offsets;
     std::vector<std::vector<int64_t>> indices;
     std::vector<int64_t> inverse_index;
+
+    indices.reserve(data.size() / 2);  // arbitrary value. at worst 1 realloc but could be too large
+    inverse_index.reserve(data.size());
+
+    int64_t num_unique = 0;
 
     for (int64_t i = 0, end = input.Shape().Size(); i < end; ++i) {
       auto entry = offsets.find(data[i]);
 
       if (entry == offsets.end()) {
         // new value
-        inverse_index.push_back({static_cast<int64_t>(indices.size())});
+        offsets[data[i]] = num_unique;
+        inverse_index.push_back({num_unique});
         indices.push_back({i});
+        ++num_unique;
       } else {
         size_t indices_idx = entry->second;
         indices[indices_idx].push_back(i);
@@ -252,6 +259,8 @@ Status Unique::ComputeImpl(OpKernelContext& context, int64_t axis) const {
     }
 
     CreateFlattenedOutput(context, offsets, indices, inverse_index, sort_);
+  } else {
+    // int64_t axis = HandleNegativeAxis(axis_, input.Shape().NumDimensions());
   }
 
   return Status::OK();
