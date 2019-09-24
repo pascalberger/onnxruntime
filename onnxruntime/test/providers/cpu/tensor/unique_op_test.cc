@@ -40,7 +40,7 @@ void RunUniqueTest(const std::vector<int64_t>& X_dims,
   // test.Run(OpTester::ExpectResult::kExpectSuccess, "", {kTensorrtExecutionProvider});
 }
 
-TEST(UniqueTest, Unique_Flatten_Unsorted) {
+TEST(Unique, Unique_Flatten_Unsorted) {
   const std::vector<int64_t> X_dims{2, 3};
   const std::vector<float> X{1.f, 4.f, 1.f, 2.f, 2.f, 0.f};
   const int64_t* axis = nullptr;
@@ -59,7 +59,7 @@ TEST(UniqueTest, Unique_Flatten_Unsorted) {
                        inverse_indices_dims, inverse_indices, counts_dims, counts);
 }
 
-TEST(UniqueTest, Unique_Flatten_Sorted) {
+TEST(Unique, Unique_Flatten_Sorted) {
   const std::vector<int64_t> X_dims{2, 3};
   const std::vector<float> X{1.f, 4.f, 1.f, 2.f, 2.f, 0.f};
   const int64_t* axis = nullptr;
@@ -79,7 +79,7 @@ TEST(UniqueTest, Unique_Flatten_Sorted) {
 }
 
 // string tests!
-TEST(UniqueTest, Unique_Flatten_Sorted_String) {
+TEST(Unique, Unique_Flatten_Sorted_String) {
   const std::vector<int64_t> X_dims{2, 3};
   const std::vector<std::string> X{"1.f", "4.f", "1.f", "2.f", "2.f", "0.f"};
   const int64_t* axis = nullptr;
@@ -96,6 +96,115 @@ TEST(UniqueTest, Unique_Flatten_Sorted_String) {
 
   RunUniqueTest<std::string>(X_dims, X, axis, sorted, Y_dims, Y, indices_dims, indices,
                              inverse_indices_dims, inverse_indices, counts_dims, counts);
+}
+
+TEST(Unique, Unique_Axis0_Unsorted) {
+  const std::vector<int64_t> X_dims{4, 2};
+  const std::vector<float> X{0.f, 1.f,
+                             1.f, 1.f,
+                             0.f, 1.f,
+                             1.f, 0.f};
+
+  const int64_t axis = 0;
+  bool sorted = false;
+  const std::vector<int64_t> Y_dims{3, 2};
+  const std::vector<float> Y{0.f, 1.f,
+                             1.f, 1.f,
+                             1.f, 0.f};
+
+  const std::vector<int64_t> indices_dims{3};
+  const std::vector<int64_t> indices{0, 1, 3};
+  const std::vector<int64_t> inverse_indices_dims{4};
+  const std::vector<int64_t> inverse_indices{0, 1, 0, 2};
+  const std::vector<int64_t> counts_dims{3};
+  const std::vector<int64_t> counts{2, 1, 1};
+
+  RunUniqueTest<float>(X_dims, X, &axis, sorted, Y_dims, Y, indices_dims, indices,
+                       inverse_indices_dims, inverse_indices, counts_dims, counts);
+}
+
+TEST(Unique, Unique_Axis0_Sorted) {
+  const std::vector<int64_t> X_dims{4, 2};
+  const std::vector<float> X{0.f, 1.f,
+                             1.f, 1.f,
+                             0.f, 1.f,
+                             1.f, 0.f};
+
+  const int64_t axis = 0;
+  bool sorted = true;
+  const std::vector<int64_t> Y_dims{3, 2};
+  const std::vector<float> Y{0.f, 1.f,
+                             1.f, 0.f,
+                             1.f, 1.f};
+
+  const std::vector<int64_t> indices_dims{3};
+  const std::vector<int64_t> indices{0, 3, 1};
+  const std::vector<int64_t> inverse_indices_dims{4};
+  const std::vector<int64_t> inverse_indices{0, 2, 0, 1};
+  const std::vector<int64_t> counts_dims{3};
+  const std::vector<int64_t> counts{2, 1, 1};
+
+  RunUniqueTest<float>(X_dims, X, &axis, sorted, Y_dims, Y, indices_dims, indices,
+                       inverse_indices_dims, inverse_indices, counts_dims, counts);
+}
+
+TEST(Unique, Unique_Axis0_Unsorted_String) {
+  const std::vector<int64_t> X_dims{4, 2};
+  const std::vector<std::string> X{"0.f", "1.f",
+                                   "1.f", "1.f",
+                                   "0.f", "1.f",
+                                   "1.f", "0.f"};
+
+  const int64_t axis = 0;
+  bool sorted = false;
+  const std::vector<int64_t> Y_dims{3, 2};
+  const std::vector<std::string> Y{"0.f", "1.f",
+                                   "1.f", "1.f",
+                                   "1.f", "0.f"};
+
+  const std::vector<int64_t> indices_dims{3};
+  const std::vector<int64_t> indices{0, 1, 3};
+  const std::vector<int64_t> inverse_indices_dims{4};
+  const std::vector<int64_t> inverse_indices{0, 1, 0, 2};
+  const std::vector<int64_t> counts_dims{3};
+  const std::vector<int64_t> counts{2, 1, 1};
+
+  RunUniqueTest<std::string>(X_dims, X, &axis, sorted, Y_dims, Y, indices_dims, indices,
+                             inverse_indices_dims, inverse_indices, counts_dims, counts);
+}
+
+TEST(Unique, Unique_Axis1_Unsorted) {
+  const std::vector<int64_t> X_dims{2, 4, 2};
+  const std::vector<int32_t> X{1, 1,
+                               0, 1,
+                               2, 1,
+                               0, 1,
+
+                               1, 1,
+                               0, 1,
+                               2, 1,
+                               0, 1};
+
+  const int64_t axis = 1;
+  bool sorted = false;
+  const std::vector<int64_t> Y_dims{2, 3, 2};
+  const std::vector<int32_t> Y{1, 1,
+                               0, 1,
+                               2, 1,
+
+                               1, 1,
+                               0, 1,
+                               2, 1};
+
+  const std::vector<int64_t> indices_dims{3};
+  const std::vector<int64_t> indices{0, 1, 2};
+  const std::vector<int64_t> inverse_indices_dims{4};
+  const std::vector<int64_t> inverse_indices{0, 1, 2, 1};
+  const std::vector<int64_t> counts_dims{3};
+  const std::vector<int64_t> counts{1, 2, 1};
+
+  RunUniqueTest<int32_t>(X_dims, X, &axis, sorted, Y_dims, Y, indices_dims, indices,
+                         inverse_indices_dims, inverse_indices, counts_dims, counts);
 }
 
 }  // namespace test

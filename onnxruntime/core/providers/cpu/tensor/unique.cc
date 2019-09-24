@@ -1,6 +1,19 @@
 // Copyright (c) Microsoft Corporation. All rights reserved.
 // Licensed under the MIT License.
 
+// there's no way to use a raw pointer as the copy destination with std::copy_n
+// (which gsl::copy uses with span::data() which returns a raw pointer) with the 14.11 toolset
+// without generating a 4996 warning. going through an iterator is way too much overhead so turn off the warning.
+#ifdef _MSC_VER
+#pragma warning(push)
+#pragma warning(disable : 4996)
+#endif
+#include "gsl/gsl_algorithm"
+#include "gsl/span"
+#ifdef _MSC_VER
+#pragma warning(pop)
+#endif
+
 #include "core/providers/cpu/tensor/unique.h"
 
 #include "core/framework/utils.h"
@@ -111,58 +124,67 @@ Status Unique::Compute(OpKernelContext* context) const {
 //  return false;  // equal
 //}
 
+// TODO: There are various optimizations that could be done:
+// For std::string use std::reference_wrapper instead of copying
+// If the number of items per entry is large:
+//    it may be better to find the items each time instead of copying them into items_.
+//    could also store a hash to avoid re-finding the items unless there's a good chance of matching
 template <typename T>
-class Entry {
+class Subtensor {
  public:
-  Entry(const T* data, const TensorShape& shape, int64_t axis, int64_t n) : n_{n} {
-    // iterate the 'n' entry of axis.
+  Subtensor(const gsl::span<const T>& data, const TensorShape& shape, int64_t axis, int64_t n_axis, int64_t idx) : idx_{idx} {
+    // iterate the 'idx' entry of axis.
+    // int64_t n_axis = shape[axis];
+    assert(shape[axis] == 1);
+    assert(idx < n_axis);
 
-    // int offset, int stride, int n, int blocksize
-    // offset is n in axis dim
-    // stride is Size()/blocksize
-    // blocksize is SizeFromDim(axis)
-    int64_t n_axis = shape[axis];
-    int64_t columns = shape.SizeFromDimension(axis);  // columns for each entry of the axis
-    int64_t total_rows = shape.Size() / columns;
-    int64_t tr2 = shape.SizeToDimension(axis);
-    int64_t rows = total_rows / n_axis;  // rows for this entry
-    int64_t offset = n * columns;
-
+    int64_t columns = shape.SizeFromDimension(axis);
+    //int64_t total_rows = shape.Size() / columns;
+    //int64_t tr2 = shape.SizeToDimension(axis);
+    //int64_t rows = total_rows / n_axis;  // rows for this entry
+    // assert(tr2 == total_rows);
+    int64_t rows = shape.SizeToDimension(axis);
     items_.reserve(rows * columns);
-    const T* end = data + shape.Size();
+    size_t cur_data = idx * columns;  // cur offset into data
 
     for (int r = 0; r < rows; ++r) {
-      T* cur = data + offset + (r * columns * n_axis);
       for (int c = 0; c < columns; ++c) {
-        items_.push_back(*cur);
-        ++cur;
+        // TODO: could copy block instead of individual items
+        items_.push_back(data[cur_data + c]);
       }
-      assert(cur < end);
+
+      cur_data += columns * n_axis;
     }
   }
 
-  bool operator<(const Entry& rhs) const {
+  bool operator<(const Subtensor& rhs) const {
     // we only expect to be comparing entries with the same shape
     assert(items_.size() == rhs.items_.size());
+
     bool c = items_ < rhs.items_;
     bool less_than = false;
     for (size_t i = 0, end = items_.size(); i < end; ++i) {
-      if (items_[i] < rhs.items_[i]) {
-        less_than = true;
-        break;
-      } else if (items_[i] > rhs.items_[i]) {
+      if (items_[i] == rhs.items_[i])
+        continue;
+      else {
+        // return items_[i] < rhs.items_[i];
+        less_than = items_[i] < rhs.items_[i];
         break;
       }
     }
 
-    ORT_ENFORCE(less_than == c);
+    ORT_ENFORCE(less_than == c, "temporary test");
 
-    return less_than;
+    return less_than;  // equal if we get here
   }
 
+  const std::vector<T>& GetItems() const { return items_; }
+
  private:
-  int64_t n_;
-  std::vector<std::reference_wrapper<const T>> items_;
+  int64_t idx_;
+
+  // TODO: Copy for now. std::string would be better as std::reference_wrapper<std::string>
+  std::vector<T> items_;
 };
 
 template <typename T>
@@ -172,7 +194,7 @@ static void CreateFlattenedOutput(OpKernelContext& context,
                                   const std::vector<int64_t>& inverse_index,         // unsorted
                                   bool sorted) {
   int64_t num_unique = static_cast<int64_t>(indices.size());
-  Tensor& Y = *context.Output(0, TensorShape({num_unique /*, <Entry shape> if not flattened */}));
+  Tensor& Y = *context.Output(0, TensorShape({num_unique /*, <Subtensor shape> if not flattened */}));
   Tensor* indices_out = context.Output(1, TensorShape({num_unique}));
   Tensor* inverse_indices = context.Output(2, TensorShape({static_cast<int64_t>(inverse_index.size())}));
   Tensor* counts = context.Output(3, TensorShape({num_unique}));
@@ -226,13 +248,119 @@ static void CreateFlattenedOutput(OpKernelContext& context,
 }
 
 template <typename T>
+static void CreateOutput(OpKernelContext& context,
+                         const TensorShape& subtensor_shape,
+                         int64_t axis,
+                         const std::map<const Subtensor<T>, int64_t>& offsets,  // sorted:unsorted idx
+                         const std::vector<std::vector<int64_t>>& indices,      // unsorted
+                         const std::vector<int64_t>& inverse_index,             // unsorted
+                         bool sorted) {
+  int64_t num_unique = static_cast<int64_t>(indices.size());
+  int64_t num_cols = subtensor_shape.SizeFromDimension(axis);
+  int64_t num_rows = subtensor_shape.SizeToDimension(axis);
+
+  const std::vector<int64_t> subtensor_dims = subtensor_shape.GetDims();
+  std::vector<int64_t> Y_dims;
+  Y_dims.reserve(subtensor_dims.size());
+  for (int64_t i = 0, end = subtensor_dims.size(); i < end; ++i) {
+    if (i == axis)
+      Y_dims.push_back(num_unique);
+    else
+      Y_dims.push_back(subtensor_dims[i]);
+  }
+
+  Tensor& Y = *context.Output(0, TensorShape(std::move(Y_dims)));
+  Tensor* indices_out = context.Output(1, TensorShape({num_unique}));
+  Tensor* inverse_indices = context.Output(2, TensorShape({static_cast<int64_t>(inverse_index.size())}));
+  Tensor* counts = context.Output(3, TensorShape({num_unique}));
+
+  auto Y_data = Y.MutableDataAsSpan<T>();
+  gsl::span<int64_t> indices_data = indices_out != nullptr ? indices_out->MutableDataAsSpan<int64_t>()
+                                                           : gsl::span<int64_t>();
+  gsl::span<int64_t> inverse_indices_data = inverse_indices != nullptr ? inverse_indices->MutableDataAsSpan<int64_t>()
+                                                                       : gsl::span<int64_t>();
+  gsl::span<int64_t> counts_data = counts != nullptr ? counts->MutableDataAsSpan<int64_t>()
+                                                     : gsl::span<int64_t>();
+
+  // iterate using 'offsets' which is sorted, but contains the offset of the unsorted entry
+  auto offsets_iter = offsets.begin();
+  //size_t items_per_entry = subtensor_shape.Size();
+
+  for (int64_t i = 0, end = num_unique; i < end; ++i, ++offsets_iter) {
+    auto unsorted_idx = offsets_iter->second;
+    // write sequentially if we want sorted output
+    auto output_idx = (sorted ? i : unsorted_idx);
+
+    const auto& items = offsets_iter->first.GetItems();
+    auto item = items.cbegin();
+    assert(static_cast<int64_t>(items.size()) == num_rows * num_cols);
+
+    int64_t out_offset = output_idx * num_cols;
+
+    for (int64_t row = 0; row < num_rows; ++row) {
+      // copy num_cols items from entries to output
+      if (std::is_same<T, std::string>::value) {
+        std::copy(item, item + num_cols, &Y_data[out_offset]);
+      } else {
+        std::copy_n(item, num_cols, &Y_data[out_offset]);
+      }
+
+      item += num_cols;
+      out_offset += num_unique * num_cols;
+    }
+
+    assert(item == items.cend());
+
+    if (indices_out) {
+      indices_data[output_idx] = indices[unsorted_idx].front();
+    }
+
+    if (counts) {
+      counts_data[output_idx] = indices[unsorted_idx].size();
+    }
+  }
+
+  if (inverse_indices) {
+    if (sorted) {
+      // need to convert unsorted entries in the inverse index to their sorted values
+      std::vector<int64_t> unsorted_to_sorted;
+      unsorted_to_sorted.resize(num_unique);
+      int64_t sorted_idx = 0;
+      for (const auto& offset : offsets) {
+        unsorted_to_sorted[offset.second] = sorted_idx++;
+      }
+
+      for (size_t i = 0, end = inverse_index.size(); i < end; ++i) {
+        inverse_indices_data[i] = unsorted_to_sorted[inverse_index[i]];
+      }
+    } else {
+      // memcpy or gsl::copy
+      for (size_t i = 0, end = inverse_index.size(); i < end; ++i) {
+        inverse_indices_data[i] = inverse_index[i];
+      }
+    }
+  }
+}
+
+//// struct to allow us to use T as a key in a map without copying
+//template <typename T>
+//struct TRef {
+//  TRef(const T& value) : ref{value} {}
+//  operator<(const TRef& rhs) {
+//    return ref.get() < rhs.ref.get();
+//  }
+//
+//  std::reference_wrapper<T> ref;
+//};
+
+template <typename T>
 Status Unique::ComputeImpl(OpKernelContext& context) const {
   const Tensor& input = *context.Input<Tensor>(0);
+  auto data = input.DataAsSpan<T>();
 
   if (flatten_) {
-    auto data = input.DataAsSpan<T>();
-
     // offset of entry in indices
+    // TODO: Could handle T=std::string better and avoid copying to use in the key of offsets but that req
     std::map<const T, int64_t> offsets;
     std::vector<std::vector<int64_t>> indices;
     std::vector<int64_t> inverse_index;
@@ -260,7 +388,50 @@ Status Unique::ComputeImpl(OpKernelContext& context) const {
 
     CreateFlattenedOutput(context, offsets, indices, inverse_index, sort_);
   } else {
-    // int64_t axis = HandleNegativeAxis(axis_, input.Shape().NumDimensions());
+    const auto& input_shape = input.Shape();
+    const int64_t input_dims = static_cast<int64_t>(input_shape.NumDimensions());
+
+    int64_t axis = HandleNegativeAxis(axis_, input_dims);
+
+    std::vector<int64_t> subtensor_dims;
+    subtensor_dims.reserve(input_dims);
+    for (int64_t i = 0; i < input_dims; ++i) {
+      if (i == axis)
+        subtensor_dims.push_back(1);
+      else
+        subtensor_dims.push_back(input_shape[i]);
+    }
+
+    TensorShape subtensor_shape(std::move(subtensor_dims));
+
+    std::map<const Subtensor<T>, int64_t> offsets;
+    std::vector<std::vector<int64_t>> indices;
+    std::vector<int64_t> inverse_index;
+
+    indices.reserve(data.size() / 2);  // arbitrary value. at worst 1 realloc but could be too large
+    inverse_index.reserve(data.size());
+
+    int64_t num_unique = 0;
+    int64_t n_axis = input_shape[axis];
+
+    for (int64_t i = 0; i < n_axis; ++i) {
+      Subtensor<T> s(data, subtensor_shape, axis, n_axis, i);
+
+      auto entry = offsets.find(s);
+      if (entry == offsets.end()) {
+        // new value
+        offsets[std::move(s)] = num_unique;
+        inverse_index.push_back({num_unique});
+        indices.push_back({i});
+        ++num_unique;
+      } else {
+        size_t indices_idx = entry->second;
+        indices[indices_idx].push_back(i);
+        inverse_index.push_back(indices_idx);
+      }
+    }
+
+    CreateOutput(context, subtensor_shape, axis, offsets, indices, inverse_index, sort_);
   }
 
   return Status::OK();

@@ -102,10 +102,6 @@ struct BFloat16 {
     }
     return result;
   }
-
-  bool operator<(const BFloat16& rhs) const {
-    return val < rhs.val;
-  }
 };
 
 inline void BFloat16ToFloat(const BFloat16* blf, float* flt, size_t size) {
@@ -130,6 +126,10 @@ inline bool operator==(const BFloat16& left, const BFloat16& right) {
 
 inline bool operator!=(const BFloat16& left, const BFloat16& right) {
   return left.val != right.val;
+}
+
+inline bool operator<(const BFloat16& left, const BFloat16& right) {
+  return left.val < right.val;
 }
 
 // DataTypeImpl pointer as unique DataTypeImpl identifier.

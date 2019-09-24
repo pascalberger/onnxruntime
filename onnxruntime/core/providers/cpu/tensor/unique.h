@@ -23,8 +23,8 @@ class Unique final : public OpKernel {
   template <typename T>
   Status ComputeImpl(OpKernelContext& context) const;
 
-  bool sort_;
-  bool flatten_;
-  int64_t axis_;
+  bool sort_{true};
+  bool flatten_{false};
+  int64_t axis_{0};
 };
 }  // namespace onnxruntime
